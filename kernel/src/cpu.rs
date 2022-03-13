@@ -1,4 +1,6 @@
-/// MSR for active GS base
+#![allow(dead_code)]
+
+// MSR for active GS base
 pub const IA32_GS_BASE: u32 = 0xc0000101;
 
 #[inline]

@@ -10,8 +10,6 @@ mod paging;
 mod panic;
 mod serial;
 
-use core::fmt::Write;
-
 use stivale_boot::v2::{
     StivaleFramebufferHeaderTag, StivaleHeader, StivalePmrPermissionFlags, StivaleStruct,
 };
@@ -19,7 +17,6 @@ use stivale_boot::v2::{
 use crate::{
     mm::{DumbPhysMem, PhysAddr, VirtAddr},
     paging::{PageTable, PAGE_NX, PAGE_PRESENT, PAGE_WRITE},
-    serial::EmergencySerial,
 };
 
 static STACK: [u8; 4096] = [0; 4096];
@@ -35,20 +32,12 @@ static STIVALE_HDR: StivaleHeader = StivaleHeader::new()
     .tags((&FRAMEBUFFER_TAG as *const StivaleFramebufferHeaderTag).cast())
     .flags(0xF);
 
-macro_rules! write {
-    ($to:ident, $($arg:tt)*) => {
-        let _ = $to.write_fmt(format_args!($($arg)*));
-    };
-}
-
 #[no_mangle]
 extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
     let mut allocator = DumbPhysMem::new(PhysAddr(2 * 1024 * 1024));
     core_locals::init(&mut allocator);
 
     let mut page_table = PageTable::new(&mut allocator).unwrap();
-
-    let mut serial = EmergencySerial;
 
     let kernel_base = boot_info.kernel_base_addr().unwrap();
     let kernel_phys_base = PhysAddr(kernel_base.physical_base_address as usize);
@@ -68,15 +57,6 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
         let flags =
             PAGE_PRESENT | if write { PAGE_WRITE } else { 0 } | if exec { 0 } else { PAGE_NX };
 
-        write!(
-            serial,
-            "Mapping {:x?} to {:x?}, flags: {:?}, for {:#x}b({:#x} pages)\n",
-            phys_base,
-            virt_base,
-            pmr.permissions(),
-            pmr.size,
-            pmr.size / 0x1000
-        );
         for i in 0..(pmr.size as usize / 0x1000) {
             unsafe {
                 page_table
@@ -95,26 +75,22 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
     }
 
     for paddr in (0..(1 * 1024 * 1024 * 1024)).step_by(4096) {
-        if unsafe {
-            page_table.map_raw(
-                &mut allocator,
-                VirtAddr(paddr),
-                paging::PageType::Page4K,
-                paddr | 3,
-                true,
-                true,
-                false,
-            )
-        }
-        .is_none()
-        {
-            panic!("Update {:#x}?", paddr);
+        unsafe {
+            page_table
+                .map_raw(
+                    &mut allocator,
+                    VirtAddr(paddr),
+                    paging::PageType::Page4K,
+                    paddr | 3,
+                    true,
+                    true,
+                    false,
+                )
+                .unwrap()
         }
     }
 
     unsafe { page_table.switch_to() }
-
-    write!(serial, "Hello, from OUR paged memory!\n");
 
     loop {}
 }

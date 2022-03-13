@@ -22,6 +22,7 @@ macro_rules! core {
 }
 
 #[inline]
+#[allow(dead_code)]
 pub fn get_core_locals() -> &'static CoreLocals {
     unsafe {
         let ptr: usize;
