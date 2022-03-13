@@ -1,2 +1,2 @@
 # Icecube
-![Icon](./icons/icecube.svg)
+![Icon](./icons/ice-cube.svg)
