@@ -10,4 +10,4 @@ panic = "abort"
 panic = "abort"
 
 [dependencies]
-stivale-boot = "*"
+stivale-boot = { path = "../third-party/stivale" }

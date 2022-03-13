@@ -25,3 +25,8 @@ pub unsafe fn set_gs_base(base: u64) {
 pub unsafe fn invlpg(page: usize) {
     core::arch::asm!("invlpg [{}]", in(reg) page);
 }
+
+#[inline]
+pub unsafe fn set_cr3(new_cr3: usize) {
+    core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
+}

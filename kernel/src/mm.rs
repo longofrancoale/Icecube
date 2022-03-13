@@ -9,7 +9,7 @@ pub struct PhysAddr(pub usize);
 pub struct VirtAddr(pub usize);
 
 pub trait PhysMem {
-    fn translate(&mut self, phys: PhysAddr, size: usize) -> Option<*mut u8>;
+    unsafe fn translate(&mut self, phys: PhysAddr, size: usize) -> Option<*mut u8>;
 
     fn alloc_phys(&mut self, layout: Layout) -> Option<PhysAddr>;
 
@@ -34,13 +34,18 @@ impl DumbPhysMem {
 }
 
 impl PhysMem for DumbPhysMem {
-    fn translate(&mut self, phys: PhysAddr, _size: usize) -> Option<*mut u8> {
+    unsafe fn translate(&mut self, phys: PhysAddr, _size: usize) -> Option<*mut u8> {
         Some(phys.0 as *mut u8)
     }
 
     fn alloc_phys(&mut self, layout: Layout) -> Option<PhysAddr> {
+        assert!(
+            layout.size() <= 0x1000,
+            "Physical allocation more than a page?!?!?"
+        );
+
         let alc = self.0;
-        self.0 = PhysAddr(self.0 .0 + (layout.size() + layout.align() - 1) & !(layout.size() - 1));
+        self.0 = PhysAddr(self.0 .0 + 0x1000);
         Some(alc)
     }
 }

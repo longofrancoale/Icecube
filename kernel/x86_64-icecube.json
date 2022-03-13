@@ -16,7 +16,9 @@
         "ld.lld": [
             "--gc-sections",
             "--script=linker.ld",
-	    "-zmax-page-size=0x1000"
+            "-zmax-page-size=0x1000",
+            "-zrelro",
+            "-znow"
         ]
     }
 }
