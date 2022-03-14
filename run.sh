@@ -1,9 +1,11 @@
 #!/bin/bash
 
 qemu-system-x86_64 \
-	-enable-kvm -cpu host\
+	-d int \
 	-pflash OVMF.fd \
 	-drive file=fat:rw:sysroot/,format=raw \
-	-serial stdio \
+	-monitor stdio \
 	-no-shutdown \
-	-no-reboot
+	-no-reboot \
+# 	-enable-kvm -cpu host \
+

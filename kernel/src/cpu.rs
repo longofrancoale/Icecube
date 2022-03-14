@@ -32,3 +32,26 @@ pub unsafe fn invlpg(page: usize) {
 pub unsafe fn set_cr3(new_cr3: usize) {
     core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
 }
+
+#[inline]
+pub unsafe fn rdtsc() -> u64 {
+    core::arch::x86_64::_rdtsc()
+}
+
+#[inline]
+pub unsafe fn to_usermode(at: usize, sp: usize) -> ! {
+    core::arch::asm!(r#"
+        mov ax, 0x20 | 3
+        mov ds, ax
+        mov es, ax
+        mov fs, ax
+        mov gs, ax
+
+        push 0x20 | 3
+        push {stack}
+        pushfq
+        push 0x18 | 3
+        push {addr}
+        iretq
+    "#, addr = in(reg) at, stack = in(reg) sp, options(noreturn));
+}
