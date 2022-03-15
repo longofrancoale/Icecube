@@ -1,6 +1,6 @@
 use core::{alloc::Layout, sync::atomic::AtomicUsize, sync::atomic::Ordering};
 
-use crate::mm::PhysMem;
+use crate::{interrupts::Interrupts, mm::PhysMem, sync::LockCell};
 
 static CORES_ONLINE: AtomicUsize = AtomicUsize::new(0);
 
@@ -9,6 +9,8 @@ pub struct CoreLocals {
     address: usize,
 
     pub id: usize,
+
+    pub interrupt_state: LockCell<Option<Interrupts>>,
 }
 
 trait CoreGuard: Sync + Sized {}
@@ -46,6 +48,7 @@ pub fn init(phys_mem: &mut dyn PhysMem) {
     let core_locals = CoreLocals {
         address: core_locals_ptr.0,
         id: CORES_ONLINE.fetch_add(1, Ordering::SeqCst),
+        interrupt_state: LockCell::new(None),
     };
 
     unsafe {

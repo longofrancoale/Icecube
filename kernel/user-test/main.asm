@@ -1,4 +1,5 @@
 section .text
 global _start
 _start:
-    jmp $
+    int 0x80
+    jmp _start

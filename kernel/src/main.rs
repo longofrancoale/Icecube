@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-#![feature(panic_info_message)]
+#![feature(panic_info_message, naked_functions, asm_sym)]
 
 #[macro_use]
 mod core_locals;
@@ -11,9 +11,11 @@ mod mm;
 mod paging;
 mod panic;
 mod serial;
+mod sync;
 
 use core::alloc::Layout;
 
+use interrupts::Registers;
 use logging::Logger;
 use mm::PhysMem;
 use paging::PAGE_USER;
@@ -23,6 +25,7 @@ use stivale_boot::v2::{
 use xmas_elf::sections::ShType;
 
 use crate::{
+    interrupts::Interrupts,
     mm::{DumbPhysMem, PhysAddr, VirtAddr},
     paging::{PageTable, PAGE_NX, PAGE_PRESENT, PAGE_WRITE},
 };
@@ -105,7 +108,10 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
 
     unsafe { page_table.switch_to() }
 
-    interrupts::init(&mut allocator);
+    {
+        let mut interrupts = core!().interrupt_state.lock();
+        *interrupts = Some(Interrupts::init(&mut allocator));
+    }
 
     let user_stack_phys = allocator
         .alloc_phys_zeroed(Layout::from_size_align(4096, 4096).unwrap())
@@ -171,7 +177,25 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
         }
     }
 
-    log::info!("Entry at {:#x}", entry);
+    log::info!("Entry at {:#x}", entry as usize);
+
+    // TODO: Use the right thing
+    unsafe {
+        core::arch::asm!(r#"
+        pushfq
+        pop {rflags}
+
+        or {rflags}, 1 << 12
+        or {rflags}, 1 << 13
+
+        push {rflags}
+        popf
+        "#, rflags = lateout(reg) _)
+    };
 
     unsafe { cpu::to_usermode(entry, user_stack_virt) }
+}
+
+pub extern "C" fn int80(_: &(), regs: &Registers) {
+    log::info!("SYSCALL: \n{:#x?}", regs);
 }
