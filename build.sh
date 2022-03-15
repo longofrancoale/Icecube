@@ -3,6 +3,13 @@
 set -xe
 
 cd kernel
+cd user-test
+
+nasm -f elf64 main.asm
+ld -Tlinker.ld main.o -o main
+
+cd ..
+
 cargo build --target-dir ../build/kernel --release
 cd ..
 
