@@ -17,6 +17,7 @@ pub enum PageType {
     Page1G = 1 * 1024 * 1024 * 1024,
 }
 
+#[derive(Debug)]
 pub struct PageTable {
     table: PhysAddr,
 }
@@ -29,6 +30,44 @@ impl PageTable {
 
     pub unsafe fn switch_to(&self) {
         crate::cpu::set_cr3(self.table.0);
+    }
+
+    pub unsafe fn read_to<T>(&self, addr: *const T, change: Option<&PageTable>) -> T {
+        self.switch_to();
+
+        let val = core::ptr::read_volatile(addr);
+
+        if let Some(page_table) = change {
+            page_table.switch_to();
+        }
+
+        val
+    }
+
+    pub unsafe fn write_to<T>(&self, addr: *mut T, val: T, change: Option<&PageTable>) {
+        self.switch_to();
+
+        core::ptr::write_volatile(addr, val);
+
+        if let Some(page_table) = change {
+            page_table.switch_to();
+        }
+    }
+
+    pub unsafe fn write_to_as_slice<T: Copy>(
+        &self,
+        addr: *mut T,
+        val: &[T],
+        change: Option<&PageTable>,
+    ) {
+        self.switch_to();
+
+        let slice = core::slice::from_raw_parts_mut(addr, val.len());
+        slice.copy_from_slice(val);
+
+        if let Some(page_table) = change {
+            page_table.switch_to();
+        }
     }
 
     pub unsafe fn map_raw(

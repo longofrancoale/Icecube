@@ -10,24 +10,21 @@ mod logging;
 mod mm;
 mod paging;
 mod panic;
+mod rangeset;
 mod serial;
 mod sync;
+mod task;
 
-use core::alloc::Layout;
-
+use crate::{
+    interrupts::{InterruptFrame, Interrupts},
+    mm::{PhysAddr, VirtAddr},
+    paging::{PageTable, PAGE_NX, PAGE_PRESENT, PAGE_WRITE},
+};
 use interrupts::Registers;
 use logging::Logger;
 use mm::PhysMem;
-use paging::PAGE_USER;
 use stivale_boot::v2::{
     StivaleFramebufferHeaderTag, StivaleHeader, StivalePmrPermissionFlags, StivaleStruct,
-};
-use xmas_elf::sections::ShType;
-
-use crate::{
-    interrupts::Interrupts,
-    mm::{DumbPhysMem, PhysAddr, VirtAddr},
-    paging::{PageTable, PAGE_NX, PAGE_PRESENT, PAGE_WRITE},
 };
 
 pub static STACK: [u8; 32 * 1024] = [0; 32 * 1024];
@@ -41,19 +38,15 @@ static LOGGER: Logger = Logger;
 #[no_mangle]
 #[used]
 static STIVALE_HDR: StivaleHeader = StivaleHeader::new()
-    .stack(&STACK[4095] as *const u8)
+    .stack(&STACK[STACK.len() - 1] as *const u8)
     .tags((&FRAMEBUFFER_TAG as *const StivaleFramebufferHeaderTag).cast())
     .flags(0xF);
 
-#[no_mangle]
-extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
-    log::set_logger(&LOGGER).unwrap();
-    log::set_max_level(log::LevelFilter::Debug);
-
-    let mut allocator = DumbPhysMem::new(PhysAddr(2 * 1024 * 1024));
-    core_locals::init(&mut allocator);
-
-    let mut page_table = PageTable::new(&mut allocator).unwrap();
+pub fn new_kernel_pagetable(
+    allocator: &mut dyn PhysMem,
+    boot_info: &'static StivaleStruct,
+) -> PageTable {
+    let mut page_table = PageTable::new(allocator).unwrap();
 
     let kernel_base = boot_info.kernel_base_addr().unwrap();
     let kernel_phys_base = PhysAddr(kernel_base.physical_base_address as usize);
@@ -77,7 +70,7 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
             unsafe {
                 page_table
                     .map_raw(
-                        &mut allocator,
+                        allocator,
                         VirtAddr(virt_base.0 + i * 4096),
                         paging::PageType::Page4K,
                         (phys_base.0 + (i * 4096)) | flags,
@@ -94,8 +87,21 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
         unsafe {
             page_table
                 .map_raw(
-                    &mut allocator,
+                    allocator,
                     VirtAddr(paddr),
+                    paging::PageType::Page4K,
+                    paddr | 3,
+                    true,
+                    true,
+                    false,
+                )
+                .unwrap()
+        }
+        unsafe {
+            page_table
+                .map_raw(
+                    allocator,
+                    VirtAddr(paddr + 0xffff800000000000),
                     paging::PageType::Page4K,
                     paddr | 3,
                     true,
@@ -106,78 +112,54 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
         }
     }
 
+    page_table
+}
+
+#[no_mangle]
+extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
+    log::set_logger(&LOGGER).unwrap();
+    log::set_max_level(log::LevelFilter::Debug);
+
+    mm::init(boot_info).unwrap();
+
+    core_locals::init(&mut mm::PhysicalMemory);
+
+    let page_table = new_kernel_pagetable(&mut mm::PhysicalMemory, boot_info);
+
     unsafe { page_table.switch_to() }
 
     {
+        let mut kernel_page_table = core!().kernel_page_table.lock();
+        *kernel_page_table = Some(page_table);
+    }
+
+    {
+        let kernel_page_table = core!().kernel_page_table.lock();
+        log::debug!("{:#?}", kernel_page_table.as_ref());
+    }
+
+    {
         let mut interrupts = core!().interrupt_state.lock();
-        *interrupts = Some(Interrupts::init(&mut allocator));
+        *interrupts = Some(Interrupts::init(&mut mm::PhysicalMemory));
     }
 
-    let user_stack_phys = allocator
-        .alloc_phys_zeroed(Layout::from_size_align(4096, 4096).unwrap())
+    let user_page_table = new_kernel_pagetable(&mut mm::PhysicalMemory, boot_info);
+    let mut user_task = task::Task::new(&mut mm::PhysicalMemory, user_page_table).unwrap();
+
+    let mut init = None;
+
+    let modules = boot_info.modules().unwrap();
+    for module in modules.iter() {
+        if module.as_str() == "__INIT__" {
+            init = Some(unsafe {
+                core::slice::from_raw_parts_mut(module.start as *mut u8, module.size() as usize)
+            });
+        }
+    }
+
+    user_task
+        .load_elf(&mut mm::PhysicalMemory, init.unwrap())
         .unwrap();
-    log::info!("User stack at {:x?}", user_stack_phys);
-    let user_stack_virt = 0xcafebabe00000000usize;
-
-    unsafe {
-        page_table
-            .map_raw(
-                &mut allocator,
-                VirtAddr(user_stack_virt),
-                paging::PageType::Page4K,
-                user_stack_phys.0 | PAGE_NX | PAGE_USER | 3,
-                true,
-                true,
-                true,
-            )
-            .unwrap()
-    };
-
-    static USER_ELF: &[u8] = include_bytes!("../user-test/main");
-    let user_elf = xmas_elf::ElfFile::new(USER_ELF).unwrap();
-    let entry = user_elf.header.pt2.entry_point() as usize;
-
-    for section in user_elf.section_iter() {
-        if section.get_type().unwrap() != ShType::ProgBits {
-            continue;
-        }
-
-        let base = section.address();
-        let data = section.raw_data(&user_elf);
-
-        let pages = data.len() / 4096 + 1;
-        for page in 0..pages {
-            let phys = allocator
-                .alloc_phys_zeroed(Layout::from_size_align(4096, 4096).unwrap())
-                .unwrap();
-            log::info!(
-                "Mapping {:#x} to {:#x}",
-                phys.0,
-                base as usize + (page * 4096)
-            );
-
-            unsafe {
-                page_table
-                    .map_raw(
-                        &mut allocator,
-                        VirtAddr(base as usize + (page * 4096)),
-                        paging::PageType::Page4K,
-                        (phys.0 + (page * 4096)) | PAGE_USER | 3,
-                        true,
-                        true,
-                        false,
-                    )
-                    .unwrap()
-            }
-
-            let ptr = unsafe {
-                core::slice::from_raw_parts_mut((base as usize + (page * 4096)) as *mut u8, 4096)
-            };
-            ptr[0..data.len()].copy_from_slice(data);
-        }
-    }
-
-    log::info!("Entry at {:#x}", entry as usize);
 
     // TODO: Use the right thing
     unsafe {
@@ -193,9 +175,21 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
         "#, rflags = lateout(reg) _)
     };
 
-    unsafe { cpu::to_usermode(entry, user_stack_virt) }
+    user_task.run()
 }
 
-pub extern "C" fn int80(_: &(), regs: &Registers) {
+pub extern "C" fn int80(frame: &InterruptFrame, regs: &Registers) {
+    if frame.cs & 0x3 == 0x3 {
+        unsafe { core::arch::asm!("swapgs") };
+    }
+
+    unsafe {
+        let kernel_page_table = core!().kernel_page_table.lock();
+        let kernel_page_table = kernel_page_table.as_ref().unwrap();
+        kernel_page_table.switch_to();
+    }
+
     log::info!("SYSCALL: \n{:#x?}", regs);
+
+    loop {}
 }

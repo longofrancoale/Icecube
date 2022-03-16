@@ -18,3 +18,4 @@ cp third-party/limine/limine.sys sysroot/limine.sys
 cp third-party/limine/BOOTX64.EFI sysroot/EFI/BOOT/BOOTX64.EFI
 cp limine/limine.cfg sysroot/limine.cfg
 cp build/kernel/x86_64-icecube/release/kernel sysroot/kernel.elf
+cp kernel/user-test/main sysroot/init

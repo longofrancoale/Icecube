@@ -3,6 +3,9 @@
 // MSR for active GS base
 pub const IA32_GS_BASE: u32 = 0xc0000101;
 
+// MSR for the kernel GS base
+pub const IA32_KERNEL_GS_BASE: u32 = 0xc0000102;
+
 #[inline]
 pub unsafe fn wrmsr(msr: u32, val: u64) {
     let low = (val & 0xFFFFFFFF) as u32;
@@ -24,6 +27,11 @@ pub unsafe fn set_gs_base(base: u64) {
 }
 
 #[inline]
+pub unsafe fn set_kernel_gs_base(base: u64) {
+    wrmsr(IA32_KERNEL_GS_BASE, base);
+}
+
+#[inline]
 pub unsafe fn invlpg(page: usize) {
     core::arch::asm!("invlpg [{}]", in(reg) page);
 }
@@ -41,17 +49,17 @@ pub unsafe fn rdtsc() -> u64 {
 #[inline]
 pub unsafe fn to_usermode(at: usize, sp: usize) -> ! {
     core::arch::asm!(r#"
-        mov ax, 0x20 | 3
-        mov ds, ax
-        mov es, ax
-        mov fs, ax
-        mov gs, ax
+        mov bx, 0x20 | 3
+        mov ds, bx
+        mov es, bx
+        
+        swapgs
 
         push 0x20 | 3
-        push {stack}
+        push rcx
         pushfq
         push 0x18 | 3
-        push {addr}
+        push rax
         iretq
-    "#, addr = in(reg) at, stack = in(reg) sp, options(noreturn));
+    "#, in("rax") at, in("rcx") sp, options(noreturn));
 }

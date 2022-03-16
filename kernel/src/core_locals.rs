@@ -1,6 +1,6 @@
 use core::{alloc::Layout, sync::atomic::AtomicUsize, sync::atomic::Ordering};
 
-use crate::{interrupts::Interrupts, mm::PhysMem, sync::LockCell};
+use crate::{interrupts::Interrupts, mm::PhysMem, paging::PageTable, sync::LockCell};
 
 static CORES_ONLINE: AtomicUsize = AtomicUsize::new(0);
 
@@ -10,6 +10,7 @@ pub struct CoreLocals {
 
     pub id: usize,
 
+    pub kernel_page_table: LockCell<Option<PageTable>>,
     pub interrupt_state: LockCell<Option<Interrupts>>,
 }
 
@@ -43,16 +44,19 @@ pub fn init(phys_mem: &mut dyn PhysMem) {
             )
             .unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
     let core_locals = CoreLocals {
-        address: core_locals_ptr.0,
+        address: core_locals_ptr,
         id: CORES_ONLINE.fetch_add(1, Ordering::SeqCst),
+        kernel_page_table: LockCell::new(None),
         interrupt_state: LockCell::new(None),
     };
 
     unsafe {
-        core::ptr::write(core_locals_ptr.0 as *mut CoreLocals, core_locals);
-        crate::cpu::set_gs_base(core_locals_ptr.0 as u64);
+        core::ptr::write(core_locals_ptr as *mut CoreLocals, core_locals);
+        crate::cpu::set_kernel_gs_base(core_locals_ptr as u64);
+        core::arch::asm!("swapgs");
     }
 }

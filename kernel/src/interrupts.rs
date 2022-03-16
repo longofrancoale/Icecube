@@ -7,7 +7,7 @@ use core::alloc::Layout;
 #[repr(C)]
 pub struct InterruptFrame {
     pub rip: u64,
-    cs: u64,
+    pub cs: u64,
     rflags: u64,
     sp: u64,
     ss: u64,
@@ -263,8 +263,6 @@ impl Interrupts {
             mov ax, 0x10
             mov ds, ax
             mov es, ax
-            mov fs, ax
-            mov gs, ax
             mov ss, ax
 
             push 0x08
@@ -315,10 +313,30 @@ impl Interrupts {
 }
 
 extern "C" fn page_fault(frame: &InterruptFrame, error_code: u64, regs: &Registers) {
+    if frame.cs & 0x3 == 0x3 {
+        unsafe { core::arch::asm!("swapgs") };
+    }
+
+    unsafe {
+        let kernel_page_table = core!().kernel_page_table.lock();
+        let kernel_page_table = kernel_page_table.as_ref().unwrap();
+        kernel_page_table.switch_to();
+    }
+
     panic!("Page fault {:#x}\n{:#x?}\n{:#x?}", error_code, frame, regs);
 }
 
 extern "C" fn double_fault(frame: &InterruptFrame, error_code: u64, regs: &Registers) {
+    if frame.cs & 0x3 == 0x3 {
+        unsafe { core::arch::asm!("swapgs") };
+    }
+
+    unsafe {
+        let kernel_page_table = core!().kernel_page_table.lock();
+        let kernel_page_table = kernel_page_table.as_ref().unwrap();
+        kernel_page_table.switch_to();
+    }
+
     panic!(
         "Double fault {:#x}\n{:#x?}\n{:#x?}",
         error_code, frame, regs

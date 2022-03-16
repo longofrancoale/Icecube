@@ -1,5 +1,12 @@
 use core::alloc::Layout;
 
+use stivale_boot::v2::{StivaleMemoryMapEntryType, StivaleStruct};
+
+use crate::{
+    rangeset::{Range, RangeSet},
+    sync::LockCell,
+};
+
 #[repr(transparent)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhysAddr(pub usize);
@@ -25,27 +32,54 @@ pub trait PhysMem {
     }
 }
 
-pub struct DumbPhysMem(PhysAddr);
+pub struct PhysicalMemory;
 
-impl DumbPhysMem {
-    pub fn new(next_addr: PhysAddr) -> DumbPhysMem {
-        DumbPhysMem(next_addr)
-    }
-}
-
-impl PhysMem for DumbPhysMem {
-    unsafe fn translate(&mut self, phys: PhysAddr, _size: usize) -> Option<*mut u8> {
+impl PhysMem for PhysicalMemory {
+    unsafe fn translate(&mut self, phys: PhysAddr, size: usize) -> Option<*mut u8> {
+        if size == 0 {
+            return None;
+        }
         Some(phys.0 as *mut u8)
     }
 
     fn alloc_phys(&mut self, layout: Layout) -> Option<PhysAddr> {
-        assert!(
-            layout.size() <= 0x1000,
-            "Physical allocation more than a page?!?!?"
+        let mut phys_mem = ALLOCATOR.lock();
+        phys_mem
+            .as_mut()
+            .map(|alloc| {
+                alloc
+                    .allocate(layout.size() as u64, layout.align() as u64)
+                    .map(|addr| PhysAddr(addr))
+            })
+            .unwrap_or(None)
+    }
+}
+
+pub static ALLOCATOR: LockCell<Option<RangeSet>> = LockCell::new(None);
+
+pub fn init(boot_info: &'static StivaleStruct) -> Option<()> {
+    log::info!("Bios Provided E820 Memory Map:");
+    let mut mem = RangeSet::new();
+
+    let mmap = boot_info.memory_map()?;
+    for entry in mmap.iter() {
+        log::info!(
+            "BIOS-e820: [mem {:#016x}-{:#016x}] {:?}",
+            entry.base,
+            entry.end_address(),
+            entry.entry_type()
         );
 
-        let alc = self.0;
-        self.0 = PhysAddr(self.0 .0 + 0x1000);
-        Some(alc)
+        if entry.entry_type() == StivaleMemoryMapEntryType::Usable {
+            mem.insert(Range {
+                start: entry.base,
+                end: entry.end_address(),
+            });
+        }
     }
+
+    let mut allocator = ALLOCATOR.lock();
+    *allocator = Some(mem);
+
+    Some(())
 }
