@@ -8,29 +8,29 @@ use core::alloc::Layout;
 pub struct InterruptFrame {
     pub rip: u64,
     pub cs: u64,
-    rflags: u64,
-    sp: u64,
-    ss: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct Registers {
-    rax: u64,
-    rbx: u64,
-    rcx: u64,
-    rdx: u64,
-    rbp: u64,
-    rsi: u64,
-    rdi: u64,
-    r8: u64,
-    r9: u64,
-    r10: u64,
-    r11: u64,
-    r12: u64,
-    r13: u64,
-    r14: u64,
-    r15: u64,
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rbp: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
 }
 
 macro_rules! handler {
@@ -305,8 +305,13 @@ impl Interrupts {
             handler_errorcode!(page_fault),
         )
         .to_u128();
-        idt[0x80] =
-            IDTDescriptor::new(0, ISTType::UserModeIntGate, 0x08, handler!(crate::int80)).to_u128();
+        idt[0x80] = IDTDescriptor::new(
+            0,
+            ISTType::UserModeIntGate,
+            0x08,
+            handler!(crate::timer_int),
+        )
+        .to_u128();
 
         Self { gdt, idt, tss }
     }

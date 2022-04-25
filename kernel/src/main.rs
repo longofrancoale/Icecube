@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
-#![feature(panic_info_message, naked_functions, asm_sym)]
+#![feature(panic_info_message, naked_functions, asm_sym, alloc_error_handler)]
+
+extern crate alloc;
 
 #[macro_use]
 mod core_locals;
@@ -19,6 +21,7 @@ use crate::{
     interrupts::{InterruptFrame, Interrupts},
     mm::{PhysAddr, VirtAddr},
     paging::{PageTable, PAGE_NX, PAGE_PRESENT, PAGE_WRITE},
+    task::Context,
 };
 use interrupts::Registers;
 use logging::Logger;
@@ -26,6 +29,7 @@ use mm::PhysMem;
 use stivale_boot::v2::{
     StivaleFramebufferHeaderTag, StivaleHeader, StivalePmrPermissionFlags, StivaleStruct,
 };
+use task::Task;
 
 pub static STACK: [u8; 32 * 1024] = [0; 32 * 1024];
 
@@ -76,7 +80,7 @@ pub fn new_kernel_pagetable(
                         (phys_base.0 + (i * 4096)) | flags,
                         true,
                         true,
-                        true,
+                        false,
                     )
                     .unwrap();
             }
@@ -118,7 +122,7 @@ pub fn new_kernel_pagetable(
 #[no_mangle]
 extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
     log::set_logger(&LOGGER).unwrap();
-    log::set_max_level(log::LevelFilter::Debug);
+    log::set_max_level(log::LevelFilter::Info);
 
     mm::init(boot_info).unwrap();
 
@@ -144,7 +148,16 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
     }
 
     let user_page_table = new_kernel_pagetable(&mut mm::PhysicalMemory, boot_info);
-    let mut user_task = task::Task::new(&mut mm::PhysicalMemory, user_page_table).unwrap();
+    let user_task = mm::PhysicalMemory.alloc().unwrap();
+    *user_task = task::Task::new(&mut mm::PhysicalMemory, user_page_table).unwrap();
+
+    let user_page_table = new_kernel_pagetable(&mut mm::PhysicalMemory, boot_info);
+    let other_task = mm::PhysicalMemory.alloc().unwrap();
+    *other_task = Task::new(&mut mm::PhysicalMemory, user_page_table).unwrap();
+
+    let user_page_table = new_kernel_pagetable(&mut mm::PhysicalMemory, boot_info);
+    let a_task = mm::PhysicalMemory.alloc().unwrap();
+    *a_task = Task::new(&mut mm::PhysicalMemory, user_page_table).unwrap();
 
     let mut init = None;
 
@@ -157,9 +170,11 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
         }
     }
 
-    user_task
-        .load_elf(&mut mm::PhysicalMemory, init.unwrap())
-        .unwrap();
+    let init = init.unwrap();
+
+    user_task.load_elf(&mut mm::PhysicalMemory, init).unwrap();
+    other_task.load_elf(&mut mm::PhysicalMemory, init).unwrap();
+    a_task.load_elf(&mut mm::PhysicalMemory, init).unwrap();
 
     // TODO: Use the right thing
     unsafe {
@@ -172,13 +187,69 @@ extern "C" fn _start(boot_info: &'static StivaleStruct) -> ! {
 
         push {rflags}
         popf
+
+        sti
         "#, rflags = lateout(reg) _)
     };
 
     user_task.run()
 }
 
-pub extern "C" fn int80(frame: &InterruptFrame, regs: &Registers) {
+pub extern "C" fn timer_int(frame: &InterruptFrame, regs: &Registers) {
+    if frame.cs & 0x3 == 0x3 {
+        unsafe { core::arch::asm!("swapgs") };
+    }
+
+    unsafe {
+        let kernel_page_table = core!().kernel_page_table.lock();
+        let kernel_page_table = kernel_page_table.as_ref().unwrap();
+        kernel_page_table.switch_to();
+    }
+
+    //log::info!("SYSCALL: \n{:#x?}", regs);
+    //log::info!("GS: {:#x}", unsafe { cpu::rdmsr(cpu::IA32_GS_BASE) });
+
+    {
+        let mut tasks = core!().tasks.lock();
+        let id = *core!().current_task_id.lock();
+
+        {
+            let task = &mut tasks[id];
+
+            task.save_context(Context {
+                regs: *regs,
+                rip: frame.rip as usize,
+                rsp: frame.rsp as usize,
+            });
+        }
+
+        if let Some(next) = tasks.get(id) {
+            log::info!("Switching to task {}!", id);
+            let page_table = unsafe { next.page_table() };
+            unsafe { (&*page_table).switch_to() };
+
+            unsafe { tasks.release_lock() };
+
+            if id + 1 != tasks.len() {
+                *core!().current_task_id.lock() = id + 1;
+            } else {
+                *core!().current_task_id.lock() = 0;
+            }
+
+            next.run()
+        } else {
+            let task = &mut tasks[id];
+            let page_table = unsafe { task.page_table() };
+            unsafe { (&*page_table).switch_to() }
+        }
+    }
+
+    if frame.cs & 0x3 == 0x3 {
+        unsafe { core::arch::asm!("swapgs") };
+    }
+}
+
+pub extern "C" fn int80(frame: &InterruptFrame, regs: &mut Registers) {
     if frame.cs & 0x3 == 0x3 {
         unsafe { core::arch::asm!("swapgs") };
     }
@@ -190,6 +261,23 @@ pub extern "C" fn int80(frame: &InterruptFrame, regs: &Registers) {
     }
 
     log::info!("SYSCALL: \n{:#x?}", regs);
+    log::info!("GS: {:#x}", unsafe { cpu::rdmsr(cpu::IA32_GS_BASE) });
 
-    loop {}
+    match regs.rax {
+        x => {
+            log::info!("Unknown syscall: {:#x}", x);
+            regs.rax = !0;
+        }
+    }
+
+    {
+        let tasks = core!().tasks.lock();
+        let task = &tasks[*core!().current_task_id.lock()];
+        let page_table = unsafe { task.page_table() };
+        unsafe { (&*page_table).switch_to() };
+    }
+
+    if frame.cs & 0x3 == 0x3 {
+        unsafe { core::arch::asm!("swapgs") };
+    }
 }

@@ -1,6 +1,9 @@
 use core::{alloc::Layout, sync::atomic::AtomicUsize, sync::atomic::Ordering};
 
-use crate::{interrupts::Interrupts, mm::PhysMem, paging::PageTable, sync::LockCell};
+use alloc::vec;
+use alloc::vec::Vec;
+
+use crate::{interrupts::Interrupts, mm::PhysMem, paging::PageTable, sync::LockCell, task::Task};
 
 static CORES_ONLINE: AtomicUsize = AtomicUsize::new(0);
 
@@ -12,6 +15,8 @@ pub struct CoreLocals {
 
     pub kernel_page_table: LockCell<Option<PageTable>>,
     pub interrupt_state: LockCell<Option<Interrupts>>,
+    pub tasks: LockCell<Vec<&'static mut Task>>,
+    pub current_task_id: LockCell<usize>,
 }
 
 trait CoreGuard: Sync + Sized {}
@@ -52,6 +57,8 @@ pub fn init(phys_mem: &mut dyn PhysMem) {
         id: CORES_ONLINE.fetch_add(1, Ordering::SeqCst),
         kernel_page_table: LockCell::new(None),
         interrupt_state: LockCell::new(None),
+        tasks: LockCell::new(vec![]),
+        current_task_id: LockCell::new(0),
     };
 
     unsafe {

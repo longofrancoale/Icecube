@@ -25,13 +25,21 @@ impl<T> LockCell<T> {
 }
 
 impl<T: ?Sized> LockCell<T> {
+    #[track_caller]
     pub fn lock(&self) -> LockCellGuard<T> {
         // Get a ticket
         let ticket = self.ticket.fetch_add(1, Ordering::SeqCst);
 
+        let mut i = 0;
+
         // Spin while our ticket doesn't match the release
         while self.release.load(Ordering::SeqCst) != ticket {
+            if i == 1_000_000 {
+                panic!("Waited too long to lock!");
+            }
+
             spin_loop();
+            i += 1;
         }
 
         // At this point we have exclusive access
@@ -41,6 +49,13 @@ impl<T: ?Sized> LockCell<T> {
 
 pub struct LockCellGuard<'a, T: ?Sized> {
     cell: &'a LockCell<T>,
+}
+
+impl<'a, T: ?Sized> LockCellGuard<'a, T> {
+    pub unsafe fn release_lock(&self) {
+        // Release the lock
+        self.cell.release.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl<'a, T: ?Sized> Drop for LockCellGuard<'a, T> {

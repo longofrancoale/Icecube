@@ -4,6 +4,7 @@ use crate::mm::{PhysMem, VirtAddr};
 use crate::paging;
 use crate::paging::{PageTable, PAGE_NX, PAGE_USER};
 use core::alloc::Layout;
+use core::sync::atomic::AtomicUsize;
 use xmas_elf::sections::ShType;
 
 #[derive(Default)]
@@ -14,12 +15,15 @@ pub struct Context {
 }
 
 pub struct Task {
+    id: usize,
     context: Context,
     page_table: PageTable,
 }
 
 impl Task {
     pub fn new(allocator: &mut dyn PhysMem, mut page_table: PageTable) -> Option<Task> {
+        static TASK_ID: AtomicUsize = AtomicUsize::new(1);
+
         const STACK_BASE: usize = 0xcafebabe00000000;
         let stack_phys = allocator.alloc_phys_zeroed(Layout::from_size_align(4096, 4096).ok()?)?;
 
@@ -36,6 +40,7 @@ impl Task {
         }
 
         Some(Task {
+            id: TASK_ID.fetch_add(1, core::sync::atomic::Ordering::SeqCst),
             context: Context {
                 rsp: STACK_BASE + 4096,
                 ..Default::default()
@@ -94,14 +99,32 @@ impl Task {
             }
         }
 
+        {
+            let mut tasks = core!().tasks.lock();
+            if let Some(_) = tasks.get(self.id) {
+                panic!("Task with the id {} is already loaded", self.id);
+            } else {
+                tasks.push(unsafe { &mut *(self as *mut _) });
+            }
+        }
+
         Some(())
     }
 
     pub fn run(&self) -> ! {
-        log::info!("Jumping to {:#x} in user-mode", self.context.rip);
+        log::debug!("Jumping to {:#x} in user-mode", self.context.rip);
+
         unsafe {
             self.page_table.switch_to();
             to_usermode(self.context.rip, self.context.rsp)
         }
+    }
+
+    pub fn save_context(&mut self, context: Context) {
+        self.context = context
+    }
+
+    pub unsafe fn page_table(&self) -> *const PageTable {
+        &self.page_table
     }
 }
